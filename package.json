@@ -58,7 +58,7 @@
     "cross-env": "^5.1.4",
     "eslint": "^10.4.0",
     "globals": "^14.0.0",
-    "mocha": "10",
+    "mocha": "12",
     "node-gyp": "^11.4.2",
     "ps-list": "^6.0.0",
     "typescript": "^5.0.0"
