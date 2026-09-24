@@ -8,6 +8,8 @@ import * as assert from 'assert';
 import { WindowsTerminal } from './windowsTerminal';
 import * as path from 'path';
 import * as psList from 'ps-list';
+import { Worker } from 'worker_threads';
+import { pollUntil } from './testUtils.test';
 
 interface IProcessState {
   // Whether the PID must exist or must not exist
@@ -100,6 +102,25 @@ if (process.platform === 'win32') {
           const term = new WindowsTerminal('cmd.exe', [], { useConptyDll });
           term.on('exit', () => done());
           term.kill();
+        });
+        it('should stop the output worker after killing a quiet terminal', async function (): Promise<void> {
+          this.timeout(10000);
+          const term = new WindowsTerminal('cmd.exe', ['/d', '/q'], { useConptyDll });
+          const worker: Worker = (term as any)._agent._conoutSocketWorker._worker;
+          try {
+            let receivedOutput = false;
+            term.onData(() => receivedOutput = true);
+            await pollUntil(() => receivedOutput, 5000, 20);
+            // Let the initial prompt drain before killing a terminal with no pending output.
+            await new Promise<void>(resolve => setTimeout(resolve, 100));
+            term.kill();
+            await pollUntil(() => worker.threadId === -1, 3000, 20).catch(() => {
+              assert.fail('The output worker is still running after terminal disposal');
+            });
+          } finally {
+            term.kill();
+            await worker.terminate();
+          }
         });
         it('should kill the process tree', function (done: Mocha.Done): void {
           this.timeout(20000);
