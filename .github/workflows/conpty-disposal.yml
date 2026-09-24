@@ -12,7 +12,7 @@ permissions:
   contents: read
 jobs:
   windows:
-    runs-on: windows-2022
+    runs-on: windows-2025
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
@@ -29,7 +29,7 @@ jobs:
         id: regression
         continue-on-error: true
         working-directory: product
-        run: npx mocha --exit lib/windowsPtyAgent.test.js --grep "start draining the bundled"
+        run: npx mocha --exit lib/windowsPtyAgent.test.js lib/windowsTerminal.test.js --grep "start draining the bundled|stop the output worker"
       - name: Standalone resource reproduction
         id: repro
         continue-on-error: true
