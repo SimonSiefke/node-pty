@@ -23,30 +23,48 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: '22.x'
-      - run: npm ci
-        working-directory: product
-      - name: Focused regression
-        id: regression
-        continue-on-error: true
-        working-directory: product
-        run: npx mocha --exit lib/windowsPtyAgent.test.js lib/windowsTerminal.test.js --grep "start draining the bundled|stop the output worker"
-      - name: Standalone resource reproduction
-        id: repro
-        continue-on-error: true
-        run: node --expose-gc scripts/repro-conpty.js product evidence
-      - name: Record revision and verdicts
-        if: always()
+      - name: Save candidate and restore baseline source
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force evidence | Out-Null
-          git -C product rev-parse HEAD | Out-File evidence/revision.txt
-          '${{ steps.regression.outcome }}' | Out-File evidence/regression.txt
-          '${{ steps.repro.outcome }}' | Out-File evidence/repro.txt
+          Copy-Item product/src/windowsPtyAgent.ts evidence/candidate.ts
+          git -C product rev-parse HEAD | Out-File evidence/candidate-revision.txt
+          git -C product fetch origin f70e1880d939c780dd977544ac470571d29f29e7
+          node -e "require('fs').writeFileSync('product/src/windowsPtyAgent.ts',require('child_process').execFileSync('git',['-C','product','show','FETCH_HEAD:src/windowsPtyAgent.ts']))"
+      - run: npm ci
+        working-directory: product
+      - name: Baseline regression tests (expected failure)
+        id: before_tests
+        continue-on-error: true
+        working-directory: product
+        run: npx mocha --exit lib/windowsPtyAgent.test.js lib/windowsTerminal.test.js --grep "start draining the bundled|stop the output worker"
+      - name: Baseline resource reproduction (expected leak)
+        id: before
+        continue-on-error: true
+        run: node --expose-gc scripts/repro-conpty.js product evidence/before
+      - name: Restore and build candidate
+        shell: pwsh
+        run: |
+          Copy-Item evidence/candidate.ts product/src/windowsPtyAgent.ts -Force
+          Set-Location product
+          npm run build
+      - name: Candidate test suite
+        id: after_tests
+        continue-on-error: true
+        working-directory: product
+        run: npm test
+      - name: Candidate resource reproduction
+        id: after
+        continue-on-error: true
+        run: node --expose-gc scripts/repro-conpty.js product evidence/after
       - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: conpty-disposal-evidence
           path: evidence
-      - name: Require clean results
-        if: steps.regression.outcome != 'success' || steps.repro.outcome != 'success'
-        run: exit 1
+      - name: Require reproduced baseline and clean candidate
+        env:
+          BEFORE_TESTS: ${{ steps.before_tests.outcome }}
+          AFTER_TESTS: ${{ steps.after_tests.outcome }}
+          AFTER: ${{ steps.after.outcome }}
+        run: node -e "const assert=require('assert');assert.equal(process.env.BEFORE_TESTS,'failure');assert.equal(process.env.AFTER_TESTS,'success');assert.equal(process.env.AFTER,'success');for(const [side,leaks] of [['before',true],['after',false]]){const rows=require('./evidence/'+side+'/result.json');const last=rows[rows.length-1];assert.equal(last.phase,'idle-30s');assert.equal(last.liveWorkers>0,leaks);assert.equal(last.started,39)}"
