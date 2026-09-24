@@ -1,0 +1,52 @@
+name: ConPTY disposal diagnostic
+on:
+  push:
+    branches: [diagnostic/conpty-disposal]
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Product revision to test
+        default: fix/conpty-output-worker-disposal
+        type: string
+permissions:
+  contents: read
+jobs:
+  windows:
+    runs-on: windows-2022
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.source_ref || 'fix/conpty-output-worker-disposal' }}
+          path: product
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22.x'
+      - run: npm ci
+        working-directory: product
+      - name: Focused regression
+        id: regression
+        continue-on-error: true
+        working-directory: product
+        run: npx mocha --exit lib/windowsPtyAgent.test.js --grep "start draining the bundled"
+      - name: Standalone resource reproduction
+        id: repro
+        continue-on-error: true
+        run: node --expose-gc scripts/repro-conpty.js product evidence
+      - name: Record revision and verdicts
+        if: always()
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force evidence | Out-Null
+          git -C product rev-parse HEAD | Out-File evidence/revision.txt
+          '${{ steps.regression.outcome }}' | Out-File evidence/regression.txt
+          '${{ steps.repro.outcome }}' | Out-File evidence/repro.txt
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: conpty-disposal-evidence
+          path: evidence
+      - name: Require clean results
+        if: steps.regression.outcome != 'success' || steps.repro.outcome != 'success'
+        run: exit 1
