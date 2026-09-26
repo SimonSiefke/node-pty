@@ -59,38 +59,29 @@ function pollForProcessState(desiredState: IProcessState, intervalMs: number = 1
   });
 }
 
-function pollForProcessTreeSize(pid: number, size: number, intervalMs: number = 100, timeoutMs: number = 2000): Promise<IWindowsProcessTreeResult[]> {
-  return new Promise<IWindowsProcessTreeResult[]>(resolve => {
-    let tries = 0;
-    const interval = setInterval(() => {
-      psList({ all: true }).then(ps => {
-        const openList: IWindowsProcessTreeResult[] = [];
-        openList.push(ps.filter(p => p.pid === pid).map(p => {
-          return { name: p.name, pid: p.pid };
-        })[0]);
-        const list: IWindowsProcessTreeResult[] = [];
-        while (openList.length) {
-          const current = openList.shift()!;
-          ps.filter(p => p.ppid === current.pid).map(p => {
-            return { name: p.name, pid: p.pid };
-          }).forEach(p => openList.push(p));
-          list.push(current);
-        }
-        console.log('list', JSON.stringify(list));
-        const success = list.length === size;
-        if (success) {
-          clearInterval(interval);
-          resolve(list);
-          return;
-        }
-        tries++;
-        if (tries * intervalMs >= timeoutMs) {
-          clearInterval(interval);
-          assert.fail(`Bad process state, expected: ${size}, actual: ${list.length}`);
-        }
-      });
-    }, intervalMs);
-  });
+async function pollForProcessTree(pid: number, names: string[], intervalMs: number = 100, timeoutMs: number = 2000): Promise<IWindowsProcessTreeResult[]> {
+  const deadline = Date.now() + timeoutMs;
+  let list: IWindowsProcessTreeResult[] = [];
+  do {
+    const ps = await psList({ all: true });
+    const root = ps.find(p => p.pid === pid);
+    const openList = root ? [root] : [];
+    list = [];
+    while (openList.length) {
+      const current = openList.shift()!;
+      if (list.some(p => p.pid === current.pid)) {
+        continue;
+      }
+      list.push({ name: current.name, pid: current.pid });
+      openList.push(...ps.filter(p => p.ppid === current.pid));
+    }
+    // Shell startup may create extra helpers, and process-list order is unspecified.
+    if (names.every(name => list.some(p => p.name.toLowerCase() === name))) {
+      return list;
+    }
+    await new Promise<void>(resolve => setTimeout(resolve, intervalMs));
+  } while (Date.now() < deadline);
+  throw new Error(`Bad process tree, expected: ${names.join(', ')}, actual: ${JSON.stringify(list)}`);
 }
 
 if (process.platform === 'win32') {
@@ -139,16 +130,13 @@ if (process.platform === 'win32') {
             // Start sub-processes
             term.write('powershell.exe\r');
             term.write('node.exe\r');
-            console.log('start poll for tree size');
-            pollForProcessTreeSize(term.pid, 3, 500, 5000).then(list => {
-              assert.strictEqual(list[0].name.toLowerCase(), 'cmd.exe');
-              assert.strictEqual(list[1].name.toLowerCase(), 'powershell.exe');
-              assert.strictEqual(list[2].name.toLowerCase(), 'node.exe');
+            console.log('start poll for process tree');
+            pollForProcessTree(term.pid, ['cmd.exe', 'powershell.exe', 'node.exe'], 500, 10000).then(list => {
               term.kill();
               const desiredState: IProcessState = {};
-              desiredState[list[0].pid] = false;
-              desiredState[list[1].pid] = false;
-              desiredState[list[2].pid] = false;
+              for (const process of list) {
+                desiredState[process.pid] = false;
+              }
               term.on('exit', () => {
                 pollForProcessState(desiredState, 1000, 5000).then(() => {
                   done();
