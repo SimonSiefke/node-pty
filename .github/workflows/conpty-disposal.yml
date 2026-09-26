@@ -47,7 +47,10 @@ jobs:
         run: |
           Copy-Item evidence/candidate.ts product/src/windowsPtyAgent.ts -Force
           Set-Location product
-          npm run build
+          # Copy-Item preserves the saved source timestamp; incremental build can reuse baseline JS.
+          npm run build -- --force
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Copy-Item lib/windowsPtyAgent.js ../evidence/candidate.js
       - name: Candidate test suite
         id: after_tests
         continue-on-error: true
